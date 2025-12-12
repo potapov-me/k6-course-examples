@@ -1,0 +1,34 @@
+# k6 output files
+summary.json
+raw.json
+*.log
+
+# Test data artifacts
+*.csv
+*.xlsx
+
+# Node modules (if using Node.js scripts)
+node_modules/
+package-lock.json
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment files
+.env
+.env.local
+
+# k6 cloud config
+.k6cloud
+
+# Temporary files
+tmp/
+temp/
+*.tmp

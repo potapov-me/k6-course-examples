@@ -1,0 +1,37 @@
+[
+  {
+    "id": "PRODUCT-001",
+    "sku": "SHOES-RUN-001",
+    "name": "Running Shoes Pro",
+    "price": 99.99,
+    "category": "footwear"
+  },
+  {
+    "id": "PRODUCT-002",
+    "sku": "SHIRT-CTN-002",
+    "name": "Cotton T-Shirt",
+    "price": 29.99,
+    "category": "clothing"
+  },
+  {
+    "id": "PRODUCT-003",
+    "sku": "WATCH-SPT-003",
+    "name": "Sport Watch",
+    "price": 199.99,
+    "category": "accessories"
+  },
+  {
+    "id": "PRODUCT-004",
+    "sku": "BAG-BKP-004",
+    "name": "Backpack 30L",
+    "price": 79.99,
+    "category": "bags"
+  },
+  {
+    "id": "PRODUCT-005",
+    "sku": "BOTTLE-HYD-005",
+    "name": "Hydration Bottle",
+    "price": 19.99,
+    "category": "accessories"
+  }
+]

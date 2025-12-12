@@ -1,0 +1,20 @@
+{
+  "name": "k6-course-examples",
+  "version": "1.0.0",
+  "description": "Примеры кода для курса 'k6: нагрузочное тестирование как система'",
+  "type": "module",
+  "scripts": {
+    "smoke": "k6 run 01-smoke-tests/basic-smoke.js",
+    "load": "k6 run 02-load-tests/ramping-vus.js",
+    "compare": "node 08-ci-cd/compare-baseline.js"
+  },
+  "keywords": [
+    "k6",
+    "load-testing",
+    "performance",
+    "testing"
+  ],
+  "author": "Constantin Potapov",
+  "license": "MIT",
+  "devDependencies": {}
+}
