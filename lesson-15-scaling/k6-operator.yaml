@@ -1,0 +1,183 @@
+# k6-operator для Kubernetes
+# Урок 15: Масштабирование генераторов нагрузки и k6 в Kubernetes
+
+---
+# 1. Простой TestRun
+apiVersion: k6.io/v1alpha1
+kind: TestRun
+metadata:
+  name: smoke-test
+  namespace: default
+spec:
+  parallelism: 1
+  script:
+    configMap:
+      name: k6-test-smoke
+      file: smoke.js
+  arguments: --out json=results.json
+
+---
+# 2. Distributed TestRun (параллельные генераторы)
+apiVersion: k6.io/v1alpha1
+kind: TestRun
+metadata:
+  name: load-test-distributed
+  namespace: default
+spec:
+  parallelism: 5  # 5 параллельных pods
+  script:
+    configMap:
+      name: k6-test-load
+      file: load.js
+  arguments: --vus 100 --duration 5m
+  runner:
+    image: grafana/k6:latest
+    resources:
+      requests:
+        cpu: "1"
+        memory: "512Mi"
+      limits:
+        cpu: "2"
+        memory: "1Gi"
+    env:
+      - name: BASE_URL
+        value: "http://shopstack-api:3000"
+      - name: K6_PROMETHEUS_RW_SERVER_URL
+        value: "http://prometheus:9090/api/v1/write"
+      - name: K6_PROMETHEUS_RW_TREND_AS_NATIVE_HISTOGRAM
+        value: "true"
+
+---
+# 3. Scheduled TestRun (cron)
+apiVersion: k6.io/v1alpha1
+kind: TestRun
+metadata:
+  name: nightly-stress-test
+  namespace: default
+spec:
+  parallelism: 10
+  script:
+    configMap:
+      name: k6-test-stress
+      file: stress.js
+  arguments: --vus 500 --duration 30m
+  runner:
+    image: grafana/k6:latest
+    resources:
+      requests:
+        cpu: "2"
+        memory: "1Gi"
+      limits:
+        cpu: "4"
+        memory: "2Gi"
+  # Запуск каждую ночь в 2:00
+  schedule: "0 2 * * *"
+
+---
+# 4. TestRun с custom image (xk6 extensions)
+apiVersion: k6.io/v1alpha1
+kind: TestRun
+metadata:
+  name: grpc-test
+  namespace: default
+spec:
+  parallelism: 3
+  script:
+    configMap:
+      name: k6-test-grpc
+      file: grpc.js
+  runner:
+    image: your-registry/k6-with-grpc:latest  # Custom image с xk6-grpc
+    resources:
+      requests:
+        cpu: "500m"
+        memory: "256Mi"
+  arguments: --vus 50 --duration 10m
+
+---
+# 5. ConfigMap с k6 тестом (smoke)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: k6-test-smoke
+  namespace: default
+data:
+  smoke.js: |
+    import http from 'k6/http';
+    import { check, sleep } from 'k6';
+
+    export const options = {
+      vus: 10,
+      duration: '1m',
+      thresholds: {
+        http_req_failed: ['rate<0.01'],
+        http_req_duration: ['p(95)<500'],
+      },
+    };
+
+    const BASE_URL = __ENV.BASE_URL || 'http://shopstack-api:3000';
+
+    export default function() {
+      const res = http.get(`${BASE_URL}/api/products`);
+
+      check(res, {
+        'status is 200': (r) => r.status === 200,
+        'response time < 500ms': (r) => r.timings.duration < 500,
+      });
+
+      sleep(1);
+    }
+
+---
+# 6. ConfigMap с load тестом
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: k6-test-load
+  namespace: default
+data:
+  load.js: |
+    import http from 'k6/http';
+    import { check, sleep } from 'k6';
+
+    export const options = {
+      scenarios: {
+        load: {
+          executor: 'ramping-vus',
+          startVUs: 0,
+          stages: [
+            { duration: '1m', target: 100 },
+            { duration: '3m', target: 100 },
+            { duration: '1m', target: 0 },
+          ],
+        },
+      },
+      thresholds: {
+        http_req_failed: ['rate<0.05'],
+        http_req_duration: ['p(95)<1000'],
+      },
+    };
+
+    const BASE_URL = __ENV.BASE_URL || 'http://shopstack-api:3000';
+
+    export default function() {
+      const res = http.get(`${BASE_URL}/api/products`);
+      check(res, { 'status 200': (r) => r.status === 200 });
+      sleep(Math.random() * 2 + 1);
+    }
+
+---
+# 7. ServiceMonitor для Prometheus scraping
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: k6-testrun
+  namespace: default
+spec:
+  selector:
+    matchLabels:
+      k6_cr: k6-testrun
+  endpoints:
+    - port: metrics
+      interval: 30s
+      path: /metrics

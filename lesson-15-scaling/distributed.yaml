@@ -1,0 +1,219 @@
+# Distributed k6 execution
+# Урок 15: Масштабирование генераторов нагрузки
+
+---
+# HorizontalPodAutoscaler для k6 генераторов
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: k6-generator-hpa
+  namespace: default
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: k6-generator
+  minReplicas: 1
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+
+---
+# Deployment для постоянных генераторов
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: k6-generator
+  namespace: default
+spec:
+  replicas: 5
+  selector:
+    matchLabels:
+      app: k6-generator
+  template:
+    metadata:
+      labels:
+        app: k6-generator
+    spec:
+      containers:
+        - name: k6
+          image: grafana/k6:latest
+          command:
+            - k6
+            - run
+            - --out
+            - experimental-prometheus-rw
+            - /scripts/load.js
+          env:
+            - name: K6_PROMETHEUS_RW_SERVER_URL
+              value: "http://prometheus:9090/api/v1/write"
+            - name: K6_PROMETHEUS_RW_TREND_AS_NATIVE_HISTOGRAM
+              value: "true"
+            - name: BASE_URL
+              value: "http://shopstack-api:3000"
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          resources:
+            requests:
+              cpu: "1"
+              memory: "512Mi"
+            limits:
+              cpu: "2"
+              memory: "1Gi"
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+      volumes:
+        - name: scripts
+          configMap:
+            name: k6-test-load
+
+---
+# Job для одноразового теста
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: k6-stress-test
+  namespace: default
+spec:
+  parallelism: 10  # 10 параллельных pods
+  completions: 10  # Все 10 должны завершиться
+  template:
+    metadata:
+      labels:
+        app: k6-stress-test
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: k6
+          image: grafana/k6:latest
+          command:
+            - k6
+            - run
+            - --vus=100
+            - --duration=10m
+            - --out=json=/results/output.json
+            - /scripts/stress.js
+          env:
+            - name: BASE_URL
+              value: "http://shopstack-api:3000"
+            - name: K6_CLOUD_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: k6-cloud
+                  key: token
+          resources:
+            requests:
+              cpu: "2"
+              memory: "1Gi"
+            limits:
+              cpu: "4"
+              memory: "2Gi"
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+            - name: results
+              mountPath: /results
+      volumes:
+        - name: scripts
+          configMap:
+            name: k6-test-stress
+        - name: results
+          emptyDir: {}
+
+---
+# CronJob для регулярных тестов
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: k6-nightly-test
+  namespace: default
+spec:
+  schedule: "0 2 * * *"  # Каждую ночь в 2:00
+  concurrencyPolicy: Forbid  # Не запускать если предыдущий еще работает
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      parallelism: 5
+      template:
+        metadata:
+          labels:
+            app: k6-nightly-test
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: k6
+              image: grafana/k6:latest
+              command:
+                - k6
+                - run
+                - --vus=200
+                - --duration=30m
+                - --summary-export=/results/summary.json
+                - /scripts/nightly.js
+              env:
+                - name: BASE_URL
+                  value: "http://shopstack-api:3000"
+              resources:
+                requests:
+                  cpu: "2"
+                  memory: "1Gi"
+              volumeMounts:
+                - name: scripts
+                  mountPath: /scripts
+                - name: results
+                  mountPath: /results
+          volumes:
+            - name: scripts
+              configMap:
+                name: k6-test-nightly
+            - name: results
+              persistentVolumeClaim:
+                claimName: k6-results
+
+---
+# PersistentVolumeClaim для хранения результатов
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: k6-results
+  namespace: default
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 10Gi
+  storageClassName: standard
+
+---
+# Service для экспорта метрик
+apiVersion: v1
+kind: Service
+metadata:
+  name: k6-metrics
+  namespace: default
+  labels:
+    app: k6-generator
+spec:
+  type: ClusterIP
+  ports:
+    - port: 5665
+      targetPort: 5665
+      name: metrics
+  selector:
+    app: k6-generator
