@@ -1,0 +1,268 @@
+# Chaos Engineering в Kubernetes с Chaos Mesh
+# Урок 13: Chaos Engineering под нагрузкой
+
+---
+# 1. Network Chaos: Добавление латентности
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: network-latency-shopstack
+  namespace: default
+spec:
+  action: delay
+  mode: all
+  selector:
+    namespaces:
+      - default
+    labelSelectors:
+      app: shopstack-api
+  delay:
+    latency: "500ms"
+    correlation: "50"
+    jitter: "200ms"
+  duration: "5m"
+  scheduler:
+    cron: "@every 10m"
+
+---
+# 2. Network Chaos: Потеря пакетов
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: network-loss-shopstack
+  namespace: default
+spec:
+  action: loss
+  mode: all
+  selector:
+    namespaces:
+      - default
+    labelSelectors:
+      app: shopstack-api
+  loss:
+    loss: "10"  # 10% packet loss
+    correlation: "25"
+  duration: "3m"
+
+---
+# 3. Pod Chaos: Убийство pod'ов
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: pod-kill-shopstack
+  namespace: default
+spec:
+  action: pod-kill
+  mode: one  # Убиваем один под
+  selector:
+    namespaces:
+      - default
+    labelSelectors:
+      app: shopstack-api
+  scheduler:
+    cron: "@every 5m"
+  duration: "30s"
+
+---
+# 4. Pod Chaos: Сбой контейнера
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: pod-failure-payment
+  namespace: default
+spec:
+  action: pod-failure
+  mode: fixed
+  value: "1"
+  selector:
+    namespaces:
+      - default
+    labelSelectors:
+      app: shopstack-payment
+  duration: "2m"
+
+---
+# 5. Stress Chaos: CPU нагрузка
+apiVersion: chaos-mesh.org/v1alpha1
+kind: StressChaos
+metadata:
+  name: cpu-stress-inventory
+  namespace: default
+spec:
+  mode: one
+  selector:
+    namespaces:
+      - default
+    labelSelectors:
+      app: shopstack-inventory
+  stressors:
+    cpu:
+      workers: 2
+      load: 80  # 80% CPU
+  duration: "5m"
+
+---
+# 6. Stress Chaos: Memory нагрузка
+apiVersion: chaos-mesh.org/v1alpha1
+kind: StressChaos
+metadata:
+  name: memory-stress-api
+  namespace: default
+spec:
+  mode: one
+  selector:
+    namespaces:
+      - default
+    labelSelectors:
+      app: shopstack-api
+  stressors:
+    memory:
+      workers: 1
+      size: "512MB"
+  duration: "3m"
+
+---
+# 7. HTTP Chaos: Возврат ошибок
+apiVersion: chaos-mesh.org/v1alpha1
+kind: HTTPChaos
+metadata:
+  name: http-abort-checkout
+  namespace: default
+spec:
+  mode: all
+  selector:
+    namespaces:
+      - default
+    labelSelectors:
+      app: shopstack-api
+  target: Request
+  port: 3000
+  path: "/api/orders/checkout"
+  abort: true
+  duration: "2m"
+
+---
+# 8. Workflow: Полный chaos сценарий
+apiVersion: chaos-mesh.org/v1alpha1
+kind: Workflow
+metadata:
+  name: black-friday-chaos
+  namespace: default
+spec:
+  entry: the-entry
+  templates:
+    - name: the-entry
+      templateType: Serial
+      deadline: 30m
+      children:
+        - baseline
+        - network-latency
+        - pod-failures
+        - stress-test
+        - recovery
+
+    - name: baseline
+      templateType: Task
+      deadline: 5m
+      task:
+        container:
+          name: baseline
+          image: grafana/k6:latest
+          command: ["k6", "run", "--vus", "50", "--duration", "5m", "/tests/baseline.js"]
+
+    - name: network-latency
+      templateType: NetworkChaos
+      deadline: 5m
+      networkChaos:
+        action: delay
+        mode: all
+        selector:
+          namespaces: ["default"]
+          labelSelectors:
+            app: shopstack-api
+        delay:
+          latency: "1000ms"
+          jitter: "500ms"
+
+    - name: pod-failures
+      templateType: PodChaos
+      deadline: 3m
+      podChaos:
+        action: pod-kill
+        mode: fixed-percent
+        value: "30"  # Kill 30% pods
+        selector:
+          namespaces: ["default"]
+          labelSelectors:
+            app: shopstack-api
+
+    - name: stress-test
+      templateType: StressChaos
+      deadline: 5m
+      stressChaos:
+        mode: all
+        selector:
+          namespaces: ["default"]
+          labelSelectors:
+            app: shopstack-api
+        stressors:
+          cpu:
+            workers: 4
+            load: 90
+
+    - name: recovery
+      templateType: Task
+      deadline: 5m
+      task:
+        container:
+          name: recovery
+          image: grafana/k6:latest
+          command: ["k6", "run", "--vus", "50", "--duration", "5m", "/tests/recovery.js"]
+
+---
+# ConfigMap с k6 тестами для Workflow
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: k6-chaos-tests
+  namespace: default
+data:
+  baseline.js: |
+    import http from 'k6/http';
+    import { check } from 'k6';
+
+    export const options = {
+      vus: 50,
+      duration: '5m',
+      thresholds: {
+        http_req_failed: ['rate<0.01'],
+        http_req_duration: ['p(95)<500'],
+      },
+    };
+
+    export default function() {
+      const res = http.get('http://shopstack-api:3000/api/products');
+      check(res, {
+        'baseline status 200': (r) => r.status === 200,
+      });
+    }
+
+  recovery.js: |
+    import http from 'k6/http';
+    import { check } from 'k6';
+
+    export const options = {
+      vus: 50,
+      duration: '5m',
+      thresholds: {
+        http_req_failed: ['rate<0.02'], // Допускаем 2% после chaos
+        http_req_duration: ['p(95)<1000'], // Допускаем деградацию
+      },
+    };
+
+    export default function() {
+      const res = http.get('http://shopstack-api:3000/api/products');
+      check(res, {
+        'recovery status 200': (r) => r.status === 200,
+      });
+    }
